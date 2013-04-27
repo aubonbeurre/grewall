@@ -39,15 +39,21 @@ type_to_name = dict(
     B3="Hydra",
 )
 
+exp_types = re.compile(r".*&list=([A-Z1-9\.]+)\[/img\]")
+exp_section = re.compile(r"\[size=\d+\](.*)\[/size\]")
+exp_stats = re.compile(r".* \((\d+)\)")
+exp_arrival = re.compile(r".*Arrival today at (\d+):(\d+):(\d+)")
+
 
 class Stat(object):
     
-    def __init__(self, stats, defeated, attacker, types, nums):
+    def __init__(self, stats, defeated, attacker, types, nums, arrival=None):
         self.stats = stats
         self.defeated = defeated
         self.attacker = attacker
         self.types = types
         self.nums = nums
+        self.arrival = arrival
         assert(len(types) == len(nums))
 
     def name(self, t):
@@ -82,10 +88,28 @@ class Stat(object):
         l += "\n\t" + ", ".join(res) 
         return l 
 
+
+class Command(Stat):
+    
+    def __repr__(self):
+        if self.arrival:
+            label = "Attack" if self.attacker else "Support"
+            l = "%s(@%s [%d])" % (label, str(self.arrival), self.stats)
+        else:
+            label = "Total Attacks" if self.attacker else "Total Supports"
+            l = "%s(%d)" % (label, self.stats)
+        
+        names = map(lambda t: self.name(t), self.types)
+        res = []
+        for cnt, name in enumerate(names):
+            if not name in ("SLOW", "FAST"):
+                res.append("%s=%d" % (name, self.nums[cnt]))
+             
+        l += ": " + ", ".join(res) 
+        return l     
+
+
 def parse(wall):
-    exp_types = re.compile(r".*&list=(.*)\[/img\]")
-    exp_section = re.compile(r"\[size=\d+\](.*)\[/size\]")
-    exp_stats = re.compile(r".* \((\d+)\)")
     lines = file(wall, "r").readlines()
     defeated = False
     attacker = False
@@ -102,6 +126,7 @@ def parse(wall):
         reg = exp_section.match(l)
         if reg:
             section = reg.group(1)
+            
             if "?" in section:
                 thisnums = section.split("?")
                 thisnums = filter(lambda x: x, thisnums)
@@ -109,6 +134,11 @@ def parse(wall):
                 nums += thisnums
             elif "[/color]" in section:
                 section = section.replace("[/color]", "").replace("[color=#fff]", "")
+                thisnums = section.split(".")
+                thisnums = filter(lambda x: x, thisnums)
+                thisnums = map(lambda x: int(x), thisnums)
+                nums += thisnums
+            elif "." in section and not "(" in section and sum(map(lambda x: 1 if x.isdigit() else 0, section)):
                 thisnums = section.split(".")
                 thisnums = filter(lambda x: x, thisnums)
                 thisnums = map(lambda x: int(x), thisnums)
@@ -184,7 +214,7 @@ def compare_walls(oldpath, newpath):
 
 
 def compare_swap_new_wall(options):
-    grepolis = os.path.join(pythonlibpath, "grepolis")
+    grepolis = os.path.join(os.path.dirname(pythonlibpath), "grepolis")
     oldpath = os.path.join(grepolis, "wall.txt")
     newpath = os.path.join(grepolis, "newwall.txt")
 
@@ -197,7 +227,7 @@ def compare_swap_new_wall(options):
 
 
 def compare_back_history_wall(options):
-    grepolis = os.path.join(pythonlibpath, "grepolis")
+    grepolis = os.path.join(os.path.dirname(pythonlibpath), "grepolis")
     logging.info("Looking into %s", grepolis)
     
     walls = glob.glob(os.path.join(grepolis, "wall*.txt"))
@@ -213,12 +243,92 @@ def compare_back_history_wall(options):
         print "*" * 80
 
 
+def commands(options, path):
+    lines = file(path, "r").readlines()
+    allcommands = []
+    attacker = False
+    arrival = None
+    for l in lines:
+        l = l.strip()
+        reg = exp_types.match(l)
+        if reg:
+            types = reg.group(1).split(".")
+            continue
+        reg = exp_section.match(l)
+        if reg:
+            section = reg.group(1)
+            
+            if "." in section and not "(" in section and sum(map(lambda x: 1 if x.isdigit() else 0, section)):
+                nums = section.split(".")
+                nums = filter(lambda x: x, nums)
+                nums = map(lambda x: int(x), nums)
+                
+                stats = sum(nums)
+                if attacker is not None:
+                    s = Command(stats, False, attacker, types, nums, arrival=arrival)
+                    allcommands.append(s)
+                continue
+            assert(0)
+        reg = exp_arrival.match(l)
+        if reg:
+            h, m, s = reg.group(1, 2, 3)
+            arrival = datetime.time(int(h), int(m), int(s))
+            if options.filter and not options.filter in l:
+                attacker = None
+                continue 
+            if "attack_spy.png" in l:
+                continue
+            elif "attack_takeover.png" in l or "attack_sea.png" in l:
+                attacker = True
+            elif "support.png" in l:
+                attacker = False
+            else:
+                assert(0)
+    
+    for attacker in (True, False):
+        alltypes = []
+        allnums = []
+        for t in type_to_name.keys():
+            num = 0
+            for c in allcommands:
+                if c.attacker != attacker:
+                    continue
+                for cnt, t2 in enumerate(c.types):
+                    if t2 == t:
+                        num += c.nums[cnt]
+            if num:
+                alltypes.append(t)
+                allnums.append(num)
+        
+        if alltypes:
+            stats = sum(allnums)
+            s = Command(stats, False, attacker, alltypes, allnums)
+            allcommands.append(s)
+    
+    return allcommands
+
+
+def print_commands(options):
+    grepolis = os.path.join(os.path.dirname(pythonlibpath), "grepolis")
+    path = os.path.join(grepolis, "commands.txt")
+    allcommands = commands(options, path)
+
+    for c in allcommands:
+        print c
+
 def main():
     parser = OptionParser(usage="%prog [options]", version="%prog 1.0")
     
     group = OptionGroup(parser,  "Display Options", "Verbose...")
-    group.add_option("-b", "--back", help="Print back history",
+    group.add_option("-b", "--back", help="Print back wall history",
                      default=False, action="store_true", dest="back")
+    parser.add_option_group(group)
+
+    group = OptionGroup(parser,  "Command Options", "Show commands...")
+    group.add_option("-c", "--commands", help="Parse commands",
+                     default=False, action="store_true", dest="commands")
+    group.add_option("-f", "--filter", help="Filter commands",
+                     default=None, action="store", dest="filter", metavar="FILTER")    
     parser.add_option_group(group)
 
     (options, args) = parser.parse_args()
@@ -234,6 +344,8 @@ def main():
     
     if options.back:
         compare_back_history_wall(options)
+    elif options.commands:
+        print_commands(options)
     else:
         compare_swap_new_wall(options)        
     
